@@ -1,0 +1,699 @@
+# =============================================================================
+# _core__models.yml - the core mart: a star schema for analysts
+# Author: Cortwright Grant
+#
+# SYNTHEA.MARTS is the only schema SYNTHEA_ANALYST_ROLE can read, so everything
+# an analyst needs has to be here. Five dimensions and seven facts:
+#
+#   dim_date          dim_patient       dim_location
+#   dim_practitioner  dim_payer
+#
+#   fct_encounter     the hub: patient, facility, practitioner, payer, cost
+#   fct_condition     fct_procedure     fct_medication
+#   fct_immunization  fct_lab_result    fct_observation
+#
+# How it joins:
+#   * Every fact has patient_id (-> dim_patient) and a date (-> dim_date.date_day).
+#   * fct_encounter also has location_id, practitioner_id and payer_id.
+#   * The six clinical-event facts have encounter_id (-> fct_encounter), which is
+#     how an event reaches its facility, practitioner and payer.
+#
+# Source: Tuva Core (the conformed layer), plus staging for columns Tuva's
+# clinical model has no place for - payer, costs, exact timestamps, reasons.
+# Keys are the source's own UUIDs. There is one source system, so no surrogate
+# keys are needed.
+#
+# Tests: a unique, non-null key on every table; every foreign key resolves; each
+# fact has exactly the row count of the Tuva Core table it is built on, which
+# proves no join dropped or duplicated a row.
+#
+# Columns that would be null or constant on every row are left out. Each model's
+# header comment says which ones and why.
+# =============================================================================
+version: 2
+
+models:
+  # ===========================================================================
+  # Dimensions
+  # ===========================================================================
+  - name: dim_date
+    description: One row per calendar day, from 1915-01-01 to the end of the current year.
+    columns:
+      - name: date_day
+        description: The calendar date. Primary key.
+        data_tests: [unique, not_null]
+      - name: year_number
+        description: Calendar year, for example 2026.
+      - name: quarter_number
+        description: Calendar quarter, 1 to 4.
+      - name: month_number
+        description: Calendar month, 1 to 12.
+      - name: month_name
+        description: Full month name, for example November.
+      - name: year_month
+        description: Year and month as YYYY-MM. Sorts correctly as text.
+      - name: year_quarter
+        description: Year and quarter, for example 2026-Q4.
+      - name: iso_week_number
+        description: ISO 8601 week of the year, 1 to 53. Weeks start on Monday.
+      - name: day_of_month
+        description: Day of the month, 1 to 31.
+      - name: day_of_year
+        description: Day of the year, 1 to 366.
+      - name: iso_day_of_week
+        description: ISO 8601 day of the week, 1 (Monday) to 7 (Sunday).
+      - name: day_name
+        description: Full day name, for example Monday.
+      - name: is_weekend
+        description: True on Saturday and Sunday.
+      - name: month_start_date
+        description: First day of the date's month.
+      - name: quarter_start_date
+        description: First day of the date's quarter.
+      - name: year_start_date
+        description: First day of the date's year.
+
+  - name: dim_patient
+    description: >
+      One row per patient, living or deceased. De-identified: no names, SSN,
+      street address or coordinates.
+    data_tests:
+      - dbt_utils.equal_rowcount:
+          arguments:
+            compare_model: ref('the_tuva_project', 'core__patient')
+    columns:
+      - name: patient_id
+        description: Synthea patient UUID. Primary key. The same value as Tuva's person_id.
+        data_tests: [unique, not_null]
+      - name: sex
+        description: male, female or unknown.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['male', 'female', 'unknown']
+      - name: race
+        description: Race, as a Tuva terminology description.
+      - name: ethnicity
+        description: hispanic or latino, not hispanic or latino, or unknown.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['hispanic or latino', 'not hispanic or latino', 'unknown']
+      - name: marital_status
+        description: married, single, divorced, widowed or unknown. Unknown is blank in the source.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['married', 'single', 'divorced', 'widowed', 'unknown']
+      - name: birth_date
+        description: Date of birth.
+        data_tests: [not_null]
+      - name: death_date
+        description: Date of death. Null for living patients.
+      - name: is_deceased
+        description: True when the patient has a date of death.
+        data_tests: [not_null]
+      - name: age
+        description: >
+          Age in completed years: at death for deceased patients, and on the day
+          the table was built for living ones.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 120
+      - name: age_group
+        description: Ten-year band of age, from 0-9 to 90+.
+      - name: city
+        description: City of residence.
+      - name: state
+        description: State of residence.
+      - name: zip_code
+        description: ZIP code of residence. Null where the source has none.
+      - name: county
+        description: County of residence.
+      - name: county_fips
+        description: Five-digit county FIPS code. Null where the source has none.
+      - name: income
+        description: Annual household income in US dollars, as simulated by Synthea.
+      - name: lifetime_healthcare_expenses
+        description: Synthea's total of what the patient paid for healthcare over their lifetime.
+      - name: lifetime_healthcare_coverage
+        description: Synthea's total of what payers covered for the patient over their lifetime.
+
+  - name: dim_location
+    description: One row per care facility (a Synthea provider organization) - hospital, clinic, home health agency and so on.
+    data_tests:
+      - dbt_utils.equal_rowcount:
+          arguments:
+            compare_model: ref('the_tuva_project', 'core__location')
+    columns:
+      - name: location_id
+        description: Synthea organization UUID. Primary key.
+        data_tests: [unique, not_null]
+      - name: location_name
+        description: Facility name.
+      - name: npi
+        description: >
+          National Provider Identifier. 1,116 of 1,144 exist in Tuva's NPI
+          registry extract; the other 28 are synthetic and start with 8888.
+      - name: address
+        description: Street address.
+      - name: city
+        description: City.
+      - name: state
+        description: State.
+      - name: zip_code
+        description: ZIP code.
+      - name: latitude
+        description: Latitude of the facility.
+      - name: longitude
+        description: Longitude of the facility.
+
+  - name: dim_practitioner
+    description: >
+      One row per clinician. This Synthea build has exactly one practitioner per
+      facility, all in general practice, so analysis by practitioner is in effect
+      analysis by facility.
+    data_tests:
+      - dbt_utils.equal_rowcount:
+          arguments:
+            compare_model: ref('the_tuva_project', 'core__practitioner')
+    columns:
+      - name: practitioner_id
+        description: Synthea provider UUID. Primary key.
+        data_tests: [unique, not_null]
+      - name: location_id
+        description: The facility the practitioner works at.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_location')
+                field: location_id
+      - name: npi
+        description: Synthetic NPI starting with 9999. None exist in the national registry.
+      - name: first_name
+        description: First name.
+      - name: last_name
+        description: Last name.
+      - name: practitioner_name
+        description: First and last name together.
+      - name: sex
+        description: male, female or unknown.
+      - name: specialty
+        description: Specialty. General practice on every row in this build.
+      - name: practice_affiliation
+        description: Name of the facility the practitioner works at.
+
+  - name: dim_payer
+    description: >
+      One row per payer. Ten rows, one of them "No Insurance", which Synthea
+      assigns to encounters of uninsured patients.
+    columns:
+      - name: payer_id
+        description: Synthea payer UUID. Primary key.
+        data_tests: [unique, not_null]
+      - name: payer_name
+        description: Payer name, for example Medicare or Aetna.
+        data_tests: [not_null]
+      - name: payer_type
+        description: government, private or no insurance.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['government', 'private', 'no insurance']
+      - name: is_insured
+        description: False only on the "No Insurance" row.
+        data_tests: [not_null]
+
+  # ===========================================================================
+  # Facts
+  # ===========================================================================
+  - name: fct_encounter
+    description: >
+      One row per encounter - the hub of the star schema. Carries the patient,
+      facility, practitioner and payer, plus length of stay and costs.
+    data_tests:
+      - dbt_utils.equal_rowcount:
+          arguments:
+            compare_model: ref('the_tuva_project', 'core__encounter')
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "encounter_end_date >= encounter_start_date"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "uncovered_amount >= 0"
+    columns:
+      - name: encounter_id
+        description: Synthea encounter UUID. Primary key.
+        data_tests: [unique, not_null]
+      - name: patient_id
+        description: The patient.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_patient')
+                field: patient_id
+      - name: location_id
+        description: The facility where the encounter took place.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_location')
+                field: location_id
+      - name: practitioner_id
+        description: The attending practitioner.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_practitioner')
+                field: practitioner_id
+      - name: payer_id
+        description: The payer billed. Never null - uninsured encounters point at "No Insurance".
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_payer')
+                field: payer_id
+      - name: encounter_start_date
+        description: Date the encounter started (UTC).
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+      - name: encounter_end_date
+        description: Date the encounter ended (UTC).
+        data_tests: [not_null]
+      - name: encounter_started_at
+        description: Start timestamp, UTC.
+        data_tests: [not_null]
+      - name: encounter_stopped_at
+        description: End timestamp, UTC.
+      - name: encounter_type
+        description: >
+          Tuva encounter type, mapped from Synthea's encounter class: office
+          visit, outpatient hospital or clinic, emergency department, urgent care,
+          acute inpatient, inpatient skilled nursing, inpatient hospice, home
+          health or telehealth.
+        data_tests: [not_null]
+      - name: encounter_group
+        description: Tuva's roll-up of encounter type - office based, outpatient or inpatient.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['office based', 'outpatient', 'inpatient']
+      - name: encounter_class
+        description: >
+          Synthea's own care-setting class: ambulatory, wellness, outpatient,
+          emergency, urgentcare, inpatient, home, snf, virtual or hospice. Finer
+          than encounter_type in one place - it separates wellness check-ups from
+          other clinic visits.
+      - name: encounter_code
+        description: SNOMED CT code for the kind of encounter.
+      - name: encounter_description
+        description: Description of encounter_code.
+      - name: reason_code
+        description: SNOMED CT code of the condition the encounter was for. Null where the source gives no reason.
+      - name: reason_description
+        description: Description of reason_code.
+      - name: patient_age_at_encounter
+        description: Patient's age in completed years on encounter_start_date.
+      - name: length_of_stay
+        description: >
+          Days from start date to end date, as calculated by Tuva. A same-day
+          encounter counts as 1, so the minimum is 1.
+      - name: duration_minutes
+        description: Minutes from start timestamp to end timestamp.
+      - name: base_encounter_cost
+        description: Synthea's cost of the encounter itself, before line items, in US dollars.
+      - name: total_cost
+        description: >
+          Synthea's total for the encounter's claim, in US dollars. Not a strict
+          sum of the line items in the other fact tables, so use it as given.
+      - name: payer_covered_amount
+        description: The part of total_cost the payer covered. Zero for "No Insurance".
+      - name: uncovered_amount
+        description: total_cost minus payer_covered_amount - the part the payer did not cover.
+
+  - name: fct_condition
+    description: >
+      One row per condition on a patient's problem list (SNOMED CT), with onset
+      and resolved dates.
+    data_tests:
+      - dbt_utils.equal_rowcount:
+          arguments:
+            compare_model: ref('the_tuva_project', 'core__condition')
+    columns:
+      - name: condition_id
+        description: Primary key, generated by Tuva.
+        data_tests: [unique, not_null]
+      - name: patient_id
+        description: The patient.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_patient')
+                field: patient_id
+      - name: encounter_id
+        description: The encounter the condition was diagnosed at.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fct_encounter')
+                field: encounter_id
+      - name: onset_date
+        description: Date the condition started.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+      - name: resolved_date
+        description: Date the condition resolved. Null while it is active.
+      - name: status
+        description: active or resolved, from whether there is a resolved date.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['active', 'resolved']
+      - name: is_active
+        description: True when the condition has not resolved.
+      - name: code_system
+        description: Vocabulary of condition_code. snomed-ct on every row.
+      - name: condition_code
+        description: SNOMED CT code.
+        data_tests: [not_null]
+      - name: condition_description
+        description: Standard SNOMED CT description.
+      - name: condition_family
+        description: >
+          Tuva's broad clinical grouping. Null on about 37% of rows - mostly
+          social findings such as employment status, which the grouper does not
+          cover.
+      - name: condition_name
+        description: Tuva's condition name within the family. Null where condition_family is null.
+      - name: days_to_resolution
+        description: Days from onset to resolution. Null while the condition is active.
+
+  - name: fct_procedure
+    description: One row per procedure performed (SNOMED CT), with its base cost.
+    data_tests:
+      - dbt_utils.equal_rowcount:
+          arguments:
+            compare_model: ref('the_tuva_project', 'core__procedure')
+    columns:
+      - name: procedure_id
+        description: Primary key, generated by Tuva.
+        data_tests: [unique, not_null]
+      - name: patient_id
+        description: The patient.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_patient')
+                field: patient_id
+      - name: encounter_id
+        description: The encounter the procedure was performed at.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fct_encounter')
+                field: encounter_id
+      - name: procedure_date
+        description: Date the procedure started (UTC).
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+      - name: procedure_started_at
+        description: >
+          Start timestamp, UTC. Comes from staging through a rebuilt Tuva id, so
+          the not_null test also proves that join still matches every row.
+        data_tests: [not_null]
+      - name: procedure_stopped_at
+        description: End timestamp, UTC.
+      - name: code_system
+        description: Vocabulary of procedure_code. snomed-ct on every row.
+      - name: procedure_code
+        description: SNOMED CT code.
+        data_tests: [not_null]
+      - name: procedure_description
+        description: Standard SNOMED CT description.
+      - name: reason_code
+        description: SNOMED CT code of the condition the procedure was for. Null where the source gives no reason.
+      - name: reason_description
+        description: Description of reason_code.
+      - name: base_cost
+        description: Synthea's line-item cost of the procedure, in US dollars.
+
+  - name: fct_medication
+    description: >
+      One row per medication order (RxNorm), with ATC drug class, fills and
+      costs.
+    data_tests:
+      - dbt_utils.equal_rowcount:
+          arguments:
+            compare_model: ref('the_tuva_project', 'core__medication')
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "uncovered_amount >= 0"
+    columns:
+      - name: medication_id
+        description: Primary key.
+        data_tests: [unique, not_null]
+      - name: patient_id
+        description: The patient.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_patient')
+                field: patient_id
+      - name: encounter_id
+        description: The encounter the medication was prescribed at.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fct_encounter')
+                field: encounter_id
+      - name: payer_id
+        description: The payer billed for the medication. The same payer as the encounter's on every row in this dataset.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_payer')
+                field: payer_id
+      - name: start_date
+        description: Date the medication was prescribed (UTC).
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+      - name: stop_date
+        description: Date the medication was stopped (UTC). Null while it is active.
+      - name: started_at
+        description: Start timestamp, UTC.
+      - name: stopped_at
+        description: Stop timestamp, UTC. Null while the medication is active.
+      - name: is_active
+        description: True when the medication has no stop date.
+      - name: rxnorm_code
+        description: RxNorm code.
+        data_tests: [not_null]
+      - name: medication_description
+        description: Standard RxNorm description where Tuva has one (97.8% of rows), otherwise Synthea's description.
+      - name: atc_code
+        description: ATC drug-class code, added by Tuva. Null on about 4% of rows.
+      - name: atc_description
+        description: Description of atc_code.
+      - name: reason_code
+        description: SNOMED CT code of the condition the medication treats. Null where the source gives no reason.
+      - name: reason_description
+        description: Description of reason_code.
+      - name: dispenses
+        description: Number of times the order was filled.
+      - name: base_cost
+        description: Cost of one fill, in US dollars.
+      - name: total_cost
+        description: Cost of all fills, in US dollars.
+        data_tests: [not_null]
+      - name: payer_covered_amount
+        description: The part of total_cost the payer covered.
+      - name: uncovered_amount
+        description: total_cost minus payer_covered_amount - the part the payer did not cover.
+
+  - name: fct_immunization
+    description: One row per vaccine administered (CVX), with its base cost.
+    data_tests:
+      - dbt_utils.equal_rowcount:
+          arguments:
+            compare_model: ref('the_tuva_project', 'core__immunization')
+    columns:
+      - name: immunization_id
+        description: Primary key.
+        data_tests: [unique, not_null]
+      - name: patient_id
+        description: The patient.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_patient')
+                field: patient_id
+      - name: encounter_id
+        description: The encounter the vaccine was given at.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fct_encounter')
+                field: encounter_id
+      - name: immunization_date
+        description: Date the vaccine was given (UTC).
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+      - name: administered_at
+        description: Timestamp the vaccine was given, UTC.
+        data_tests: [not_null]
+      - name: cvx_code
+        description: CVX vaccine code.
+        data_tests: [not_null]
+      - name: vaccine_description
+        description: Standard CVX description.
+      - name: base_cost
+        description: Synthea's line-item cost of the vaccine, in US dollars.
+
+  - name: fct_lab_result
+    description: One row per resulted lab analyte (LOINC).
+    data_tests:
+      - dbt_utils.equal_rowcount:
+          arguments:
+            compare_model: ref('the_tuva_project', 'core__lab_result')
+    columns:
+      - name: lab_result_id
+        description: Primary key.
+        data_tests: [unique, not_null]
+      - name: patient_id
+        description: The patient.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_patient')
+                field: patient_id
+      - name: encounter_id
+        description: The encounter the lab was resulted at.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('fct_encounter')
+                field: encounter_id
+      - name: result_date
+        description: Date of the result (UTC).
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+      - name: resulted_at
+        description: Timestamp of the result, UTC.
+      - name: loinc_code
+        description: LOINC code of the analyte.
+        data_tests: [not_null]
+      - name: lab_description
+        description: Standard LOINC description.
+      - name: result
+        description: The result as text. Numeric for most labs, words for some.
+      - name: result_numeric
+        description: The result as a number. Null when result is not numeric (about 19% of rows).
+      - name: units
+        description: Units of the result (UCUM).
+
+  - name: fct_observation
+    description: >
+      One row per non-laboratory observation - vital signs, survey answers,
+      social history, exams and Synthea's yearly quality-of-life scores.
+    data_tests:
+      - dbt_utils.equal_rowcount:
+          arguments:
+            compare_model: ref('the_tuva_project', 'core__observation')
+    columns:
+      - name: observation_id
+        description: Primary key.
+        data_tests: [unique, not_null]
+      - name: patient_id
+        description: The patient.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_patient')
+                field: patient_id
+      - name: encounter_id
+        description: >
+          The encounter the observation was recorded at. Null on about 10% of
+          rows: the yearly quality-of-life scores, which sit outside any
+          encounter.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('fct_encounter')
+                field: encounter_id
+      - name: observation_date
+        description: Date of the observation (UTC).
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+      - name: observation_type
+        description: vital-signs, survey, social-history, exam, procedure, imaging, therapy or other.
+        data_tests: [not_null]
+      - name: code_type
+        description: >
+          Vocabulary of observation_code: loinc, snomed-ct, or synthea for codes
+          Synthea invented that exist in no standard.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['loinc', 'snomed-ct', 'synthea']
+      - name: observation_code
+        description: Code of what was observed.
+        data_tests: [not_null]
+      - name: observation_description
+        description: Standard description where the code is a standard one, otherwise Synthea's description.
+      - name: result
+        description: The result as text.
+      - name: result_numeric
+        description: The result as a number. Null when result is not numeric.
+      - name: units
+        description: Units of the result (UCUM).

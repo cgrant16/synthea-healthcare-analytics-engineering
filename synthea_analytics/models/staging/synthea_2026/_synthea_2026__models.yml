@@ -2,12 +2,12 @@
 # _synthea_2026__models.yml - staging models over RAW_2026
 # Author: Cortwright Grant
 #
-# One staging model per source table that the Tuva Input Layer needs. Each is a
-# view that renames columns to snake_case and casts the all-VARCHAR RAW columns
-# to real types. No joins and no business logic: that lives in
-# models/tuva_input_layer/.
+# One staging model per source table that the Tuva Input Layer or the marts
+# need. Each is a view that renames columns to snake_case and casts the
+# all-VARCHAR RAW columns to real types. No joins and no business logic: that
+# lives in models/tuva_input_layer/ and models/marts/.
 #
-# The nine remaining RAW_2026 tables (payers, payer_transitions, claims,
+# The eight remaining RAW_2026 tables (payer_transitions, claims,
 # claims_transactions, allergies, careplans, devices, supplies,
 # imaging_studies) get staging models when a downstream model first needs them.
 # =============================================================================
@@ -44,6 +44,18 @@ models:
         data_tests: [not_null]
       - name: npi
         description: Synthetic NPI in a 9999 range. None exist in the NPI registry.
+
+  - name: stg_synthea_2026__payers
+    description: One row per payer. Ten rows, including the NO_INSURANCE placeholder.
+    columns:
+      - name: payer_id
+        data_tests: [unique, not_null]
+      - name: ownership
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['GOVERNMENT', 'PRIVATE', 'NO_INSURANCE']
 
   - name: stg_synthea_2026__encounters
     description: One row per encounter.
