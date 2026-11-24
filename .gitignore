@@ -1,0 +1,17 @@
+# Author: Cortwright Grant
+
+# Rendered IAM JSON contains your bucket / account specifics
+aws/iam/rendered/
+
+# dbt (later)
+profiles.yml
+target/
+dbt_packages/
+logs/
+.user.yml
+
+# Secrets / local
+.env
+*.pem
+*.p8
+.DS_Store
