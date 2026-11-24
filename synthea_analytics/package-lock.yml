@@ -1,0 +1,8 @@
+packages:
+- package: dbt-labs/dbt_utils
+  name: dbt_utils
+  version: 1.4.1
+- git: https://github.com/tuva-health/tuva-core.git
+  name: the_tuva_project
+  revision: 131d12a5225282563917b76af92718b555c24d4d
+sha1_hash: 5c17a1d80e1128e9a45173921d328f6c2fd8cdf2

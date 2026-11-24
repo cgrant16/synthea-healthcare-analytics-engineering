@@ -2,8 +2,17 @@
 
 **Author:** Cortwright Grant
 
-SyntheticMass v2 (2017) CSV → **Amazon S3** → **Snowflake RAW** → dbt Core (later).
+Synthea CSV → **Amazon S3** → **Snowflake RAW** → dbt.
 Full background: [docs/project-context.md](docs/project-context.md).
+
+Two Synthea datasets land through the same pipeline:
+
+| Dataset | Schema | Patients | Used for |
+|---|---|---|---|
+| SyntheticMass v2 (2017) | `SYNTHEA.RAW` | 1.59 M | Ingestion at scale. Clinical tables only. |
+| Current-version Synthea (2026 build) | `SYNTHEA.RAW_2026` | 11,500 | The dbt and Tuva build. Adds organizations, providers, payers, claims and costs. See [Current-version dataset](#current-version-dataset-raw_2026). |
+
+They are different populations with different columns and are never joined.
 
 ## Ingestion runbook
 
@@ -96,12 +105,95 @@ To use dbt Core 1.12 instead, run `source ../.venv/bin/activate` first. While th
 | Layer | Schema | Materialized as |
 |---|---|---|
 | `staging/` | `STAGING` | views |
+| `tuva_input_layer/` | `TUVA_INPUT_LAYER` | tables |
+| Tuva Core (package) | `TUVA_NORMALIZED_LAYER`, `TUVA_CORE`, and others | tables |
 | `intermediate/` | `INTERMEDIATE` | views |
 | `marts/` | `MARTS` | tables |
 
 `macros/generate_schema_name.sql` builds into those schemas exactly as named, because the dbt role can't create schemas.
 
-**Source tests:** `dbt test -s "source:*"` passes, with one expected warning. The encounters → patients relationship test warns on the 38,391 encounters that belong to quarantined patients, and errors only above that count.
+### Tuva Core
+
+[Tuva Core](https://github.com/tuva-health/tuva-core) 1.0.0 is the conformed layer between staging and the marts. It turns the source tables into a standard healthcare data model and attaches standard terminology (SNOMED CT, LOINC, CVX, RxNorm drug classes).
+
+```
+RAW_2026  →  stg_synthea_2026__*  →  tuva_input_layer/*  →  Tuva Core  →  marts
+(landed)     (typed, renamed)        (Tuva's contract)      (package)     (to build)
+```
+
+- **Install:** `packages.yml` pins the `v1.0.0` GitHub tag, because Tuva 1.0 is not on dbt Hub yet. `package-lock.yml` records the exact commit. Run `dbt deps` after cloning.
+- **Schemas:** Tuva builds into its own schemas, prefixed `TUVA_` by `tuva_schema_prefix`. `snowflake/07_tuva_schemas.sql` pre-creates them and grants the dbt role, since that role can't create schemas.
+- **Input layer:** `models/tuva_input_layer/` holds one model per Tuva clinical input table, named as Tuva expects (`patient`, `encounter`, `condition`, and so on) with exactly the contract's columns, order and types. Each model's header comment explains its mapping decisions.
+- **Scope:** only the clinical domain is mapped (`clinical_enabled: true`). The claims domain is not, so member months, cost and the claims-based marts are not built.
+- **Seeds:** Tuva's 71 terminology, value-set and provider seeds load from Tuva's public S3 bucket with `COPY INTO`, run by the dbt role. This is the one place data enters Snowflake outside the ingest role and the storage integration.
+
+```bash
+cd synthea_analytics
+dbt deps                                                    # install Tuva Core and dbt_utils
+dbt seed  --select package:the_tuva_project                 # terminology, about 1 minute
+dbt build --select path:models/staging/synthea_2026 path:models/tuva_input_layer
+dbt build --select package:the_tuva_project --exclude resource_type:seed resource_type:unit_test
+```
+
+**How the source maps to Tuva:**
+
+| Tuva input model | Source | Notes |
+|---|---|---|
+| `patient` | patients | Sex, race and ethnicity recoded to Tuva's values |
+| `encounter` | encounters, organizations, providers | Encounter class mapped to Tuva encounter types; facility NPI and attending provider filled |
+| `condition` | conditions | SNOMED CT, mapped as problem-list entries |
+| `procedure` | procedures | SNOMED CT |
+| `medication` | medications | RxNorm |
+| `observation` | observations, all but laboratory | Vital signs, surveys, social history, exams |
+| `lab_result` | observations, laboratory only | LOINC, mapped as the resulted component |
+| `immunization` | immunizations | CVX |
+| `location` | organizations | 1,116 of 1,144 NPIs exist in Tuva's NPI registry extract |
+| `practitioner` | providers | Synthetic NPIs; one provider per organization |
+| `appointment` | none | Empty by design; Synthea has no scheduling data |
+
+Allergies, care plans, devices, supplies and imaging studies have no Tuva input table and are not mapped.
+
+**Build results (2026-11-23), dbt 2.0.12 on a SMALL warehouse:**
+
+- Staging and input layer: 20 models and 95 tests, all passing, in about 40 seconds.
+- Tuva Core: 39 models and 58 data tests, all passing, in about 40 seconds. Tuva validated its Snowflake release on dbt Core 1.11, not on dbt 2.0, so this combination is this project's own result.
+- Every Core table has exactly the row count of its input model, and the input models add up to the RAW_2026 tables they read.
+
+| `TUVA_CORE` table | Rows | Standardized by Tuva |
+|---|---|---|
+| `patient` | 11,500 | Age and age group on every row |
+| `encounter` | 1,894,556 | Encounter group and length of stay on every row |
+| `condition` | 1,126,394 | SNOMED CT description on 100%; Tuva condition family on 63.4% |
+| `procedure` | 5,797,021 | SNOMED CT description on 100%; procedure family on 0% |
+| `medication` | 1,104,084 | RxNorm description on 97.8%; ATC drug class on 95.8% |
+| `observation` | 14,936,192 | Standard code on 90.1% |
+| `lab_result` | 7,924,196 | LOINC component on 100% |
+| `immunization` | 618,211 | CVX on 100% |
+| `location` | 1,144 | |
+| `practitioner` | 1,144 | |
+| `appointment` | 0 | Empty by design |
+
+Three gaps in that table are expected. Tuva's procedure grouper covers ICD-10-PCS and HCPCS, so SNOMED CT procedures get no family. The conditions without a family are mostly social findings such as employment status. The observations without a standard code are Synthea's own quality-of-life scores.
+
+**Tuva data quality:** the framework is off by default. To run it against the input layer:
+
+```bash
+dbt build --select tag:dq_structural tag:dq_logical --vars '{"data_quality_enabled": true}' --exclude resource_type:unit_test
+```
+
+Results land in `TUVA_DATA_QUALITY`. On 2026-11-23:
+
+- **Structural:** all 11 input tables have every contract column and a correct primary key. `appointment` fails "table populated", by design.
+- **Structural, false positive:** three integer columns (`patient.death_flag`, `condition.condition_rank`, `appointment.duration`) are reported as a type mismatch. They are `NUMBER(38,0)` in Snowflake, which is its integer type; the check sees only `NUMBER`.
+- **Logical:** 143 checks ran and 11 reported failures, none of them a mapping defect:
+  - Seven date checks flag anything before 2000-01-01, which is 30% to 43% of rows, because the data keeps full patient history back to 1915.
+  - Three NPI checks flag the synthetic NPIs: all 1,144 practitioners, 28 locations, and the 6.5% of encounters at those locations.
+  - One check flags the missing lab accession number, which Synthea does not have.
+- **Package self-test:** one of Tuva's own tests, `check_logical_native_date_coverage`, fails in this clinical-only configuration. It tests Tuva's check catalog, not this project's data, and its cause was not investigated.
+
+**Sources:** `synthea_raw` is the 2017 extract in `RAW`; `synthea_2026_raw` is the current-version dataset in `RAW_2026`, with 18 tables and 35 tests. Its relationship tests are hard failures, because the source files have no orphan keys. `dbt test -s "source:synthea_2026_raw"` passes all 35.
+
+**Source tests:** `dbt test -s "source:synthea_raw"` passes, with one expected warning. The encounters → patients relationship test warns on the 38,391 encounters that belong to quarantined patients, and errors only above that count.
 
 ## RAW load results (2026-11-23)
 
@@ -128,6 +220,85 @@ In the 2017 SyntheticMass patients files, some records were spliced together whe
 - **Why Snowflake can't catch it:** matching columns by name needs `ERROR_ON_COLUMN_COUNT_MISMATCH = FALSE`, and positional `COPY` ignores the column-count check. Either way, the bad rows load silently.
 - **How it's handled:** `aws/quarantine_patients.py` keeps a line only if it has exactly the header's field count, copying it byte-for-byte. Every other line goes to `RAW.PATIENTS_REJECTS` with its file name, line number and field count. The original files are kept at `s3://…/synthea-v2/original/patients/`, outside the stage.
 - **Effect downstream:** 3,694 patients (0.23%) exist only in rejected lines, so their encounters and other events have no patient row. Check 5 in `04` confirms that every orphan patient ID appears in a rejected line, with 0 unexplained. dbt relationship tests on `patient` should therefore use a documented warning threshold, not a hard failure.
+
+## Current-version dataset (`RAW_2026`)
+
+**Why it exists:** the 2017 archive has no usable provider, organization, payer, claims or cost data in any of its three formats. The CSV has 9 clinical tables. The FHIR bundles hold one placeholder organization per patient ("Synthetic Provider", no address or identifier) and no practitioners or claims. Current Synthea exports all of these, as 18 CSV tables.
+
+### Runbook
+
+Steps 8 and 9 default to a dry run. Each step is safe to re-run.
+
+| # | Where | File | Runs as | What it does |
+|---|-------|------|---------|--------------|
+| 8 | Mac | `aws/mac_generate_and_upload_2026.sh` | your IAM user | Generates the population, gzips each CSV part, prints an inventory, uploads one prefix per table (`UPLOAD=1`) |
+| 8b | Mac | `aws/profile_synthea_2026.py` | — | Proves every source row has the header's field count, prints row counts, checks keys |
+| 9 | Mac | `aws/mac_add_prefix_to_iam_policy.sh` | your IAM user | Adds `synthea-2026/csv/` to the read-only IAM policy (`APPLY=1`) |
+| 10 | Snowflake | `snowflake/05_raw_2026_landing.sql` | SYSADMIN, SECURITYADMIN, ACCOUNTADMIN, SYNTHEA_INGEST_ROLE | Schema, grants, widened storage integration, stage, load procedure, loads |
+| 11 | Snowflake | `snowflake/06_raw_2026_verification.sql` | SYNTHEA_INGEST_ROLE | Row counts, staged files against loaded files, keys, relationships |
+
+```bash
+./aws/mac_generate_and_upload_2026.sh                             # generate, gzip, inventory
+BUCKET=<bucket> ./aws/mac_generate_and_upload_2026.sh             # plus an upload dry run
+BUCKET=<bucket> UPLOAD=1 ./aws/mac_generate_and_upload_2026.sh    # real upload
+python3 aws/profile_synthea_2026.py                               # pre-load profile
+BUCKET=<bucket> ./aws/mac_add_prefix_to_iam_policy.sh             # show the IAM change
+BUCKET=<bucket> APPLY=1 ./aws/mac_add_prefix_to_iam_policy.sh     # publish it
+```
+
+### How the data was generated
+
+- **Generator:** `synthea-with-dependencies.jar`, the `master-branch-latest` build published 2026-11-20 (commit `5441eef`, sha256 `1584dd9d4f8a393d64c6a5bcc8058bf075c38b2ae34676daf3b60977a092eddb`). The tagged v4.0.0 release was not used because it writes no NPI column on organizations or providers.
+- **Java:** OpenJDK 17 (`brew install openjdk@17`). Synthea asks for an LTS release, 17 or 25.
+- **Settings:** 10,000 living patients, Massachusetts, seed and reference date `20261123`, CSV only, parts of 1,000,000 lines. `exporter.years_of_history=0` keeps the full record; the default of 10 drops anything older than ten years.
+- **Result:** 11,500 patients (10,000 living and 1,500 deceased), 22 GB of CSV in 83 parts, generated in under 4 minutes.
+
+### S3 layout
+
+```
+s3://<bucket>/synthea-2026/csv/
+    patients/             patients__part_001.csv.gz
+    claims_transactions/  claims_transactions__part_001.csv.gz ... __part_034.csv.gz
+    ...
+```
+
+The storage integration and the IAM policy each allow both prefixes, `synthea-v2/csv/` and `synthea-2026/csv/`, and nothing else. The integration is widened with `ALTER`, which keeps its external ID.
+
+### RAW_2026 load results (2026-11-23)
+
+| Table | Rows |
+|---|---|
+| CLAIMS_TRANSACTIONS | 33,015,078 |
+| OBSERVATIONS | 22,860,388 |
+| PROCEDURES | 5,797,021 |
+| CLAIMS | 2,998,640 |
+| ENCOUNTERS | 1,894,556 |
+| IMAGING_STUDIES | 1,282,041 |
+| CONDITIONS | 1,126,394 |
+| MEDICATIONS | 1,104,084 |
+| SUPPLIES | 829,208 |
+| IMMUNIZATIONS | 618,211 |
+| PAYER_TRANSITIONS | 492,824 |
+| DEVICES | 184,522 |
+| CAREPLANS | 101,948 |
+| PATIENTS | 11,500 |
+| ALLERGIES | 10,758 |
+| ORGANIZATIONS | 1,144 |
+| PROVIDERS | 1,144 |
+| PAYERS | 10 |
+
+72,329,471 rows in all, from 83 files, about 2 GB stored in Snowflake.
+
+- **Before loading:** `aws/profile_synthea_2026.py` counted the same rows in the source files and found no row with a wrong field count, no duplicate or empty ID in the six entity tables, and no foreign key without a parent row.
+- **After loading:** every table's row count matches that profile exactly, and all 83 staged files are present. Step 11 found no duplicate or null key and no orphan row in any of its nine relationship checks, including claims transactions → claims.
+
+### What it adds, and its limits
+
+- **Encounters** carry organization, provider, payer, one of 10 encounter classes, start and stop timestamps, and cost columns on every row.
+- **Organizations (1,144)** have name, address and NPI. 1,116 NPIs start with 1 and 28 are in a synthetic 8888 range; none were checked against the national registry.
+- **Providers (1,144)** are exactly one per organization, all with speciality GENERAL PRACTICE and a synthetic 9999 NPI. Provider-level analysis is in effect facility-level.
+- **Payers (10)** and **payer transitions** give yearly coverage spans with member IDs.
+- **Claims** link to every encounter, but their diagnosis and procedure codes are SNOMED CT or LOINC. There are no bill type, revenue, DRG or CMS place of service codes.
 
 ## Troubleshooting `LIST @stage`
 
