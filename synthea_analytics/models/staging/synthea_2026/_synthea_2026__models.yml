@@ -1,0 +1,111 @@
+# =============================================================================
+# _synthea_2026__models.yml - staging models over RAW_2026
+# Author: Cortwright Grant
+#
+# One staging model per source table that the Tuva Input Layer needs. Each is a
+# view that renames columns to snake_case and casts the all-VARCHAR RAW columns
+# to real types. No joins and no business logic: that lives in
+# models/tuva_input_layer/.
+#
+# The nine remaining RAW_2026 tables (payers, payer_transitions, claims,
+# claims_transactions, allergies, careplans, devices, supplies,
+# imaging_studies) get staging models when a downstream model first needs them.
+# =============================================================================
+version: 2
+
+models:
+  - name: stg_synthea_2026__patients
+    description: One row per patient, living or deceased.
+    columns:
+      - name: patient_id
+        description: Synthea patient UUID.
+        data_tests: [unique, not_null]
+      - name: birth_date
+        data_tests: [not_null]
+      - name: zip_code
+        description: ZIP code. Null where Synthea wrote the placeholder 00000.
+
+  - name: stg_synthea_2026__organizations
+    description: One row per provider organization (hospital, clinic, home health and so on).
+    columns:
+      - name: organization_id
+        data_tests: [unique, not_null]
+      - name: npi
+        description: >
+          National Provider Identifier. 1,116 of 1,144 are found in Tuva's NPI
+          registry extract; the other 28 are in a synthetic 8888 range.
+
+  - name: stg_synthea_2026__providers
+    description: One row per clinician. Exactly one per organization in this build.
+    columns:
+      - name: provider_id
+        data_tests: [unique, not_null]
+      - name: organization_id
+        data_tests: [not_null]
+      - name: npi
+        description: Synthetic NPI in a 9999 range. None exist in the NPI registry.
+
+  - name: stg_synthea_2026__encounters
+    description: One row per encounter.
+    columns:
+      - name: encounter_id
+        data_tests: [unique, not_null]
+      - name: started_at
+        description: Start timestamp, UTC.
+        data_tests: [not_null]
+      - name: stopped_at
+        description: End timestamp, UTC.
+        data_tests: [not_null]
+      - name: encounter_class
+        description: Synthea's care-setting class.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['ambulatory', 'wellness', 'outpatient', 'emergency', 'urgentcare',
+                         'inpatient', 'home', 'snf', 'virtual', 'hospice']
+
+  - name: stg_synthea_2026__conditions
+    description: One row per condition record. Codes are SNOMED CT.
+    columns:
+      - name: condition_key
+        description: Surrogate key (the source has no id).
+        data_tests: [unique, not_null]
+      - name: started_on
+        data_tests: [not_null]
+
+  - name: stg_synthea_2026__procedures
+    description: One row per procedure. Codes are SNOMED CT.
+    columns:
+      - name: procedure_key
+        description: Surrogate key (the source has no id).
+        data_tests: [unique, not_null]
+      - name: started_at
+        data_tests: [not_null]
+
+  - name: stg_synthea_2026__medications
+    description: One row per medication order. Codes are RxNorm.
+    columns:
+      - name: medication_key
+        description: Surrogate key (the source has no id).
+        data_tests: [unique, not_null]
+      - name: started_at
+        data_tests: [not_null]
+
+  - name: stg_synthea_2026__observations
+    description: One row per observation - vital signs, lab results, survey answers and more.
+    columns:
+      - name: observation_key
+        description: Surrogate key (the source has no id).
+        data_tests: [unique, not_null]
+      - name: observed_at
+        data_tests: [not_null]
+
+  - name: stg_synthea_2026__immunizations
+    description: One row per vaccine administration. Codes are CVX.
+    columns:
+      - name: immunization_key
+        description: Surrogate key (the source has no id).
+        data_tests: [unique, not_null]
+      - name: administered_at
+        data_tests: [not_null]
