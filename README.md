@@ -59,31 +59,37 @@ s3://<bucket>/synthea-v2/csv/
 - Each row has three audit columns: `_SOURCE_FILE`, `_SOURCE_ROW` and `_LOADED_AT`.
 - `COPY` skips files it has already loaded, so re-running a load never duplicates rows. Do not use `FORCE = TRUE`.
 
-## dbt Core project (`synthea_analytics/`)
+## dbt project (`synthea_analytics/`)
 
-**Stack:** dbt Core 1.12.7 with dbt-snowflake 1.12.5, on Python 3.12, in a project virtual environment at `.venv/`.
+**Engine:** dbt v2 (2.0.12), the Rust-based engine and dbt's default for new installs. It runs as a single binary with no Python, and its stricter parsing catches errors earlier. The project also runs on dbt Core 1.12.7 as a fallback: it has no deprecations and gives identical source-test results on both engines.
 
-dbt's "v2" is the Rust-based Fusion engine, a standalone binary. It is not the Python `dbt-core` package, whose 2.0 exists only as release candidates. This project targets dbt Core 1.12 and is kept free of deprecations so it can move to v2 without changes.
-
-**One-time setup:**
+**Install dbt v2:**
 ```bash
-python3.12 -m venv .venv && .venv/bin/pip install -r synthea_analytics/requirements.txt
-cp synthea_analytics/profiles.yml.example ~/.dbt/profiles.yml   # or append its `synthea:` block, then fill in <PLACEHOLDERS>
+curl -fsSL https://public.cdn.getdbt.com/fs/install/install.sh | sh -s -- --update   # installs to ~/.local/bin/dbt
+dbt system update                                                                    # later upgrades
 ```
 
-**Authentication:** dbt connects as `SYNTHEA_DBT_USER`, a `TYPE = SERVICE` user that can't use a password, with role `SYNTHEA_DBT_ROLE` and warehouse `SYNTHEA_TRANSFORM_WH`. It authenticates with an RSA key pair. To set one up:
+**dbt Core 1.12 fallback (optional):**
+```bash
+python3.12 -m venv .venv && .venv/bin/pip install -r synthea_analytics/requirements.txt
+```
+
+**Profile:** copy `synthea_analytics/profiles.yml.example` to `~/.dbt/profiles.yml`, or append its `synthea:` block, then fill in the `<PLACEHOLDERS>`. Both engines read the same profile.
+
+**Authentication:** dbt connects as `SYNTHEA_DBT_USER`, a `TYPE = SERVICE` user that can't use a password, with role `SYNTHEA_DBT_ROLE` and warehouse `SYNTHEA_TRANSFORM_WH`. It authenticates with an RSA key pair in PKCS#8 format. To set one up:
 ```bash
 openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out ~/.snowflake/keys/synthea_dbt_user.p8 -nocrypt
 openssl rsa -in ~/.snowflake/keys/synthea_dbt_user.p8 -pubout -out ~/.snowflake/keys/synthea_dbt_user.pub
 ```
 Then run this in Snowflake as SECURITYADMIN, pasting in the body of the `.pub` file without its BEGIN/END lines: `ALTER USER SYNTHEA_DBT_USER SET RSA_PUBLIC_KEY = '<key body>';`
 
-**Daily use:** activate the virtual environment first. If another `dbt` is installed (for example dbt Fusion in `~/.local/bin`), it would otherwise be the one that runs.
+**Daily use:**
 ```bash
-source .venv/bin/activate && cd synthea_analytics
-dbt debug            # connection check
+cd synthea_analytics
+dbt debug                 # dbt v2 (~/.local/bin/dbt)
 dbt test -s "source:*"
 ```
+To use dbt Core 1.12 instead, run `source ../.venv/bin/activate` first. While the virtual environment is active, its `dbt` takes precedence.
 
 **Layers:**
 

@@ -1,5 +1,5 @@
 # =============================================================================
-# dbt_project.yml - Synthea healthcare analytics (dbt Core 1.12 on Snowflake)
+# dbt_project.yml - Synthea healthcare analytics (dbt v2 on Snowflake; dbt Core 1.12 compatible)
 # Author: Cortwright Grant
 #
 # Layers (medallion):  RAW (loaded outside dbt)  ->  STAGING  ->  INTERMEDIATE  ->  MARTS
@@ -9,6 +9,7 @@
 name: synthea_analytics
 version: "0.1.0"
 config-version: 2
+require-dbt-version: [">=1.12.0", "<3.0.0"]   # dbt v2 primary, dbt Core 1.12 fallback
 
 profile: synthea            # matches the profile name in ~/.dbt/profiles.yml
 

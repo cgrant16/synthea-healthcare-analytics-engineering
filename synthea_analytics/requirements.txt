@@ -1,5 +1,5 @@
 # Author: Cortwright Grant
-# dbt Core + Snowflake adapter, pinned to the 1.12 line (latest stable).
-# dbt-core 2.0 is release-candidate only and dbt-snowflake has no 2.0 release.
+# OPTIONAL fallback: dbt Core 1.12 + Snowflake adapter (Python).
+# The primary engine is dbt v2, a standalone binary - see README "Install dbt v2".
 dbt-core~=1.12.7
 dbt-snowflake~=1.12.5
