@@ -118,7 +118,7 @@ To use dbt Core 1.12 instead, run `source ../.venv/bin/activate` first. While th
 
 ```
 RAW_2026  →  stg_synthea_2026__*  →  tuva_input_layer/*  →  Tuva Core  →  marts
-(landed)     (typed, renamed)        (Tuva's contract)      (package)     (to build)
+(landed)     (typed, renamed)        (Tuva's contract)      (package)     (star schema)
 ```
 
 - **Install:** `packages.yml` pins the `v1.0.0` GitHub tag, because Tuva 1.0 is not on dbt Hub yet. `package-lock.yml` records the exact commit. Run `dbt deps` after cloning.
@@ -194,6 +194,47 @@ Results land in `TUVA_DATA_QUALITY`. On 2026-11-23:
 **Sources:** `synthea_raw` is the 2017 extract in `RAW`; `synthea_2026_raw` is the current-version dataset in `RAW_2026`, with 18 tables and 35 tests. Its relationship tests are hard failures, because the source files have no orphan keys. `dbt test -s "source:synthea_2026_raw"` passes all 35.
 
 **Source tests:** `dbt test -s "source:synthea_raw"` passes, with one expected warning. The encounters → patients relationship test warns on the 38,391 encounters that belong to quarantined patients, and errors only above that count.
+
+### Core mart
+
+`models/marts/core/` is a star schema in `SYNTHEA.MARTS`, the only schema `SYNTHEA_ANALYST_ROLE` can read. It is built on Tuva Core, plus staging for what Tuva's clinical model has no column for: payer, costs, exact timestamps and reasons.
+
+```bash
+cd synthea_analytics
+dbt build --select stg_synthea_2026__payers path:models/marts
+```
+
+| Table | Rows | One row per |
+|---|---|---|
+| `dim_date` | 40,908 | Calendar day, 1915-01-01 to the end of the current year |
+| `dim_patient` | 11,500 | Patient, de-identified |
+| `dim_location` | 1,144 | Care facility |
+| `dim_practitioner` | 1,144 | Clinician |
+| `dim_payer` | 10 | Payer, including "No Insurance" |
+| `fct_encounter` | 1,894,556 | Encounter, with facility, practitioner, payer, length of stay and costs |
+| `fct_condition` | 1,126,394 | Condition on the problem list (SNOMED CT) |
+| `fct_procedure` | 5,797,021 | Procedure (SNOMED CT), with base cost |
+| `fct_medication` | 1,104,084 | Medication order (RxNorm), with ATC class, fills and costs |
+| `fct_immunization` | 618,211 | Vaccine given (CVX), with base cost |
+| `fct_lab_result` | 7,924,196 | Resulted lab analyte (LOINC) |
+| `fct_observation` | 14,936,192 | Non-lab observation: vitals, surveys, social history, exams |
+
+**How it joins:**
+
+- Every fact has `patient_id` (to `dim_patient`) and a date (to `dim_date.date_day`).
+- `fct_encounter` also has `location_id`, `practitioner_id` and `payer_id`.
+- The six clinical-event facts have `encounter_id`, which is how an event reaches its facility, practitioner and payer.
+- Keys are the source's own UUIDs. `patient_id` is Tuva's `person_id`.
+
+**Design decisions:**
+
+- **De-identified patients.** `dim_patient` has no names, SSN, street address or coordinates. City, ZIP code and county stay.
+- **Age is recalculated.** Tuva's `age` is "as of the last run" for everyone, so deceased patients keep ageing: 1,480 of the 1,500 had an age past their age at death. `dim_patient.age` stops at the date of death, and `fct_encounter` has the age at each encounter.
+- **Empty columns are left out.** Tuva columns that are null on every row here (DRG, admit source, procedure modifiers, lab reference ranges and so on) are not carried into the mart. Each model's header comment lists them.
+- **Costs are Synthea's simulated figures.** `total_cost` on `fct_encounter` is Synthea's own claim total and is not a strict sum of the line items in the other facts, so it should be used as given.
+- **One join depends on a Tuva internal.** Tuva replaces the procedure's source id with a hash, so `fct_procedure` rebuilds that hash with Tuva's `stable_id_hash` macro to bring back cost and timestamps. A `not_null` test on `procedure_started_at` fails if a Tuva upgrade changes the recipe.
+
+**Build results (2026-11-23):** 13 models (12 tables and the new `stg_synthea_2026__payers` view) and 119 tests, all passing, in about 17 seconds on dbt 2.0.12 and about 19 seconds on dbt Core 1.12.7. The tests cover a unique, non-null key on every table, every foreign key, and a row count equal to the Tuva Core table each model is built on, which shows that no join dropped or duplicated a row.
 
 ## RAW load results (2026-11-23)
 
