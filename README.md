@@ -59,6 +59,44 @@ s3://<bucket>/synthea-v2/csv/
 - Each row has three audit columns: `_SOURCE_FILE`, `_SOURCE_ROW` and `_LOADED_AT`.
 - `COPY` skips files it has already loaded, so re-running a load never duplicates rows. Do not use `FORCE = TRUE`.
 
+## dbt Core project (`synthea_analytics/`)
+
+**Stack:** dbt Core 1.12.7 with dbt-snowflake 1.12.5, on Python 3.12, in a project virtual environment at `.venv/`.
+
+dbt's "v2" is the Rust-based Fusion engine, a standalone binary. It is not the Python `dbt-core` package, whose 2.0 exists only as release candidates. This project targets dbt Core 1.12 and is kept free of deprecations so it can move to v2 without changes.
+
+**One-time setup:**
+```bash
+python3.12 -m venv .venv && .venv/bin/pip install -r synthea_analytics/requirements.txt
+cp synthea_analytics/profiles.yml.example ~/.dbt/profiles.yml   # or append its `synthea:` block, then fill in <PLACEHOLDERS>
+```
+
+**Authentication:** dbt connects as `SYNTHEA_DBT_USER`, a `TYPE = SERVICE` user that can't use a password, with role `SYNTHEA_DBT_ROLE` and warehouse `SYNTHEA_TRANSFORM_WH`. It authenticates with an RSA key pair. To set one up:
+```bash
+openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out ~/.snowflake/keys/synthea_dbt_user.p8 -nocrypt
+openssl rsa -in ~/.snowflake/keys/synthea_dbt_user.p8 -pubout -out ~/.snowflake/keys/synthea_dbt_user.pub
+```
+Then run this in Snowflake as SECURITYADMIN, pasting in the body of the `.pub` file without its BEGIN/END lines: `ALTER USER SYNTHEA_DBT_USER SET RSA_PUBLIC_KEY = '<key body>';`
+
+**Daily use:** activate the virtual environment first. If another `dbt` is installed (for example dbt Fusion in `~/.local/bin`), it would otherwise be the one that runs.
+```bash
+source .venv/bin/activate && cd synthea_analytics
+dbt debug            # connection check
+dbt test -s "source:*"
+```
+
+**Layers:**
+
+| Layer | Schema | Materialized as |
+|---|---|---|
+| `staging/` | `STAGING` | views |
+| `intermediate/` | `INTERMEDIATE` | views |
+| `marts/` | `MARTS` | tables |
+
+`macros/generate_schema_name.sql` builds into those schemas exactly as named, because the dbt role can't create schemas.
+
+**Source tests:** `dbt test -s "source:*"` passes, with one expected warning. The encounters → patients relationship test warns on the 38,391 encounters that belong to quarantined patients, and errors only above that count.
+
 ## RAW load results (2026-11-23)
 
 | Table | Rows |

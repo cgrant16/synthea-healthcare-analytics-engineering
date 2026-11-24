@@ -1,0 +1,25 @@
+# =============================================================================
+# profiles.yml.example - copy to ~/.dbt/profiles.yml and fill in <PLACEHOLDERS>
+# Author: Cortwright Grant
+#
+# The real profiles.yml is gitignored: it holds your account identifier and the
+# path to your private key. Auth is key-pair (no password): SYNTHEA_DBT_USER is
+# a TYPE = SERVICE user, which cannot log in with a password.
+# =============================================================================
+synthea:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: <SNOWFLAKE_ACCOUNT>          # e.g. ORGNAME-ACCOUNTNAME (from SELECT CURRENT_ORGANIZATION_NAME() || '-' || CURRENT_ACCOUNT_NAME();)
+      user: SYNTHEA_DBT_USER
+      authenticator: snowflake_jwt
+      private_key_path: ~/.snowflake/keys/synthea_dbt_user.p8
+      # private_key_passphrase: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PASSPHRASE') }}"   # if the key is encrypted
+      role: SYNTHEA_DBT_ROLE
+      warehouse: SYNTHEA_TRANSFORM_WH
+      database: SYNTHEA
+      schema: STAGING                     # fallback only; layers set their own schema
+      threads: 8
+      client_session_keep_alive: false
+      query_tag: dbt_synthea

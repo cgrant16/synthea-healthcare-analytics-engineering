@@ -1,0 +1,62 @@
+# =============================================================================
+# _synthea__sources.yml - RAW tables loaded from S3 (see snowflake/03_*.sql)
+# Author: Cortwright Grant
+#
+# All RAW columns are VARCHAR; typing happens in the stg_* models.
+# Every table also carries _SOURCE_FILE, _SOURCE_ROW, _LOADED_AT.
+# =============================================================================
+version: 2
+
+sources:
+  - name: synthea_raw
+    description: >
+      SyntheticMass v2 (24 May 2017) CSV extract, ~1.59 M synthetic patients,
+      landed verbatim in SYNTHEA.RAW. organizations / providers are not part of
+      this extract.
+    database: SYNTHEA
+    schema: RAW
+    loader: Snowflake COPY INTO via SYNTHEA.RAW.LOAD_RAW_TABLE
+    config:
+      loaded_at_field: _LOADED_AT
+
+    tables:
+      - name: patients
+        description: >
+          One row per patient. 4,153 malformed source lines were quarantined to
+          patients_rejects at ingest; 3,694 patients exist only there, so event
+          tables contain patient IDs with no row here.
+        columns:
+          - name: ID
+            data_tests: [unique, not_null]
+
+      - name: patients_rejects
+        description: Raw patients lines that did not have exactly 17 fields (audit only).
+
+      - name: encounters
+        columns:
+          - name: ID
+            data_tests: [unique, not_null]
+          - name: PATIENT
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('synthea_raw', 'patients')
+                    field: ID
+                  config:
+                    # The test counts failing ENCOUNTER rows. 38,391 encounters belong
+                    # to the 3,694 quarantined patients (verified in snowflake/04_*.sql),
+                    # so that many is expected; anything above it is a new problem.
+                    warn_if: ">0"
+                    error_if: ">38391"
+
+      - name: conditions
+      - name: medications
+      - name: procedures
+      - name: observations
+      - name: immunizations
+      - name: allergies
+      - name: careplans
+        columns:
+          - name: ID
+            data_tests: [not_null]

@@ -1,0 +1,47 @@
+# =============================================================================
+# dbt_project.yml - Synthea healthcare analytics (dbt Core 1.12 on Snowflake)
+# Author: Cortwright Grant
+#
+# Layers (medallion):  RAW (loaded outside dbt)  ->  STAGING  ->  INTERMEDIATE  ->  MARTS
+# Each layer builds into the Snowflake schema of the same name. See
+# macros/generate_schema_name.sql for why custom schemas are used verbatim.
+# =============================================================================
+name: synthea_analytics
+version: "0.1.0"
+config-version: 2
+
+profile: synthea            # matches the profile name in ~/.dbt/profiles.yml
+
+model-paths:    ["models"]
+analysis-paths: ["analyses"]
+test-paths:     ["tests"]
+seed-paths:     ["seeds"]
+macro-paths:    ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets: ["target", "dbt_packages"]
+
+flags:
+  send_anonymous_usage_stats: false
+
+models:
+  synthea_analytics:
+    +persist_docs:          # push model/column descriptions into Snowflake comments
+      relation: true
+      columns: true
+
+    staging:                # stg_*: 1:1 with a RAW table; rename, cast, light cleanup
+      +schema: STAGING
+      +materialized: view
+
+    intermediate:           # int_*: joins and business logic reused by marts
+      +schema: INTERMEDIATE
+      +materialized: view
+
+    marts:                  # dim_* / fct_*: star schema for analysts
+      +schema: MARTS
+      +materialized: table
+
+data_tests:
+  synthea_analytics:
+    +store_failures: false  # flip to true when you want failing rows kept for triage
