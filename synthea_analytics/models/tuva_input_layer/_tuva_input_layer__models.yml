@@ -1,0 +1,131 @@
+# =============================================================================
+# _tuva_input_layer__models.yml - this project's mapping to the Tuva Input Layer
+# Author: Cortwright Grant
+#
+# Tuva Core reads its inputs through ref('patient'), ref('encounter') and so on,
+# and expects the root project to provide those models. These are they: one model
+# per clinical Input Layer table, named exactly as Tuva names it, with exactly the
+# contract's columns, order and types (Tuva Core 1.0.0).
+#
+# Source: the stg_synthea_2026__* staging models (RAW_2026). All mapping decisions
+# are explained in the header comment of each model.
+#
+# Built as tables in TUVA_INPUT_LAYER, next to Tuva's own input_layer__* wrapper
+# views. Every row carries data_source = 'synthea'.
+#
+# Only the clinical domain is mapped. The claims domain (eligibility,
+# medical_claim, pharmacy_claim) is not, so claims_enabled stays off.
+# =============================================================================
+version: 2
+
+models:
+  - name: patient
+    description: One row per patient. person_id and patient_id are the same Synthea UUID.
+    columns:
+      - name: person_id
+        data_tests: [unique, not_null]
+      - name: sex
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['male', 'female', 'unknown']
+      - name: race
+        description: Tuva race terminology description.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('terminology__race')
+                field: description
+      - name: ethnicity
+        description: Tuva ethnicity terminology code (2135-2 Hispanic or Latino, 2186-5 Not Hispanic or Latino).
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('terminology__ethnicity')
+                field: code
+
+  - name: encounter
+    description: One row per encounter, with facility and attending provider from the encounter's organization and provider.
+    columns:
+      - name: encounter_id
+        data_tests: [unique, not_null]
+      - name: person_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('patient')
+                field: person_id
+      - name: encounter_type
+        description: Tuva encounter type, mapped from Synthea's encounter class.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('terminology__encounter_type')
+                field: encounter_type
+
+  - name: condition
+    description: One row per condition record (SNOMED CT), mapped as problem-list entries.
+    columns:
+      - name: source_condition_id
+        data_tests: [unique, not_null]
+      - name: code_system
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['snomed-ct']
+
+  - name: procedure
+    description: One row per procedure (SNOMED CT).
+    columns:
+      - name: source_procedure_id
+        data_tests: [unique, not_null]
+      - name: code_system
+        data_tests: [not_null]
+
+  - name: medication
+    description: One row per medication order (RxNorm).
+    columns:
+      - name: medication_id
+        data_tests: [unique, not_null]
+
+  - name: observation
+    description: One row per non-laboratory observation - vital signs, surveys, social history, exams and Synthea's yearly quality-of-life scores.
+    columns:
+      - name: observation_id
+        data_tests: [unique, not_null]
+      - name: observation_type
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('terminology__observation_type')
+                field: observation_type
+
+  - name: lab_result
+    description: One row per laboratory observation (LOINC), mapped as the resulted component.
+    columns:
+      - name: lab_result_id
+        data_tests: [unique, not_null]
+
+  - name: immunization
+    description: One row per vaccine administration (CVX).
+    columns:
+      - name: immunization_id
+        data_tests: [unique, not_null]
+
+  - name: location
+    description: One row per provider organization, with NPI.
+    columns:
+      - name: location_id
+        data_tests: [unique, not_null]
+
+  - name: practitioner
+    description: One row per clinician. One per organization in this Synthea build.
+    columns:
+      - name: practitioner_id
+        data_tests: [unique, not_null]
+
+  - name: appointment
+    description: Empty by design - Synthea has no scheduling data. Present because Tuva requires the model.

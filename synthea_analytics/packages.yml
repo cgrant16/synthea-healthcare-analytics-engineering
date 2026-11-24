@@ -1,0 +1,13 @@
+# =============================================================================
+# packages.yml - dbt package dependencies
+# Author: Cortwright Grant
+#
+# Tuva Core is installed from its GitHub release tag: Tuva 1.0 is not on dbt Hub
+# yet. Pin the exact tag (never a branch) so every install resolves the same
+# code; `dbt deps` records the commit in package-lock.yml.
+#
+# Tuva Core brings in dbt-labs/dbt_utils itself.
+# =============================================================================
+packages:
+  - git: "https://github.com/tuva-health/tuva-core.git"
+    revision: "v1.0.0"

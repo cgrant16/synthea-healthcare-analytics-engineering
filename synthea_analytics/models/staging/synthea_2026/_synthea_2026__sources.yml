@@ -1,0 +1,182 @@
+# =============================================================================
+# _synthea_2026__sources.yml - RAW_2026 tables loaded from S3
+#                              (see snowflake/05_raw_2026_landing.sql)
+# Author: Cortwright Grant
+#
+# Current-version Synthea (2026 build): 11,500 synthetic Massachusetts patients
+# (10,000 living, 1,500 deceased), 18 tables, 72.3 M rows. This is the dataset
+# the Tuva build runs on, because it carries what the 2017 extract lacks:
+# organizations, providers, payers, coverage spans, claims and costs.
+#
+# All RAW_2026 columns are VARCHAR; typing happens in the stg_* models.
+# Every table also carries _SOURCE_FILE, _SOURCE_ROW, _LOADED_AT.
+#
+# Unlike the 2017 source, every relationship test here is a hard failure: the
+# generator writes all tables in one run, and aws/profile_synthea_2026.py found
+# no orphan keys in the source files.
+# =============================================================================
+version: 2
+
+sources:
+  - name: synthea_2026_raw
+    description: >
+      Current-version Synthea CSV export, generated locally with the
+      master-branch build of 2026-11-20 (seed 20261123, full history) and landed
+      verbatim in SYNTHEA.RAW_2026. A different population from synthea_raw
+      (2017); the two are never joined.
+    database: SYNTHEA
+    schema: RAW_2026
+    loader: Snowflake COPY INTO via SYNTHEA.RAW_2026.LOAD_RAW_TABLE
+    config:
+      loaded_at_field: _LOADED_AT
+
+    tables:
+      # ---- Reference entities ------------------------------------------------
+      - name: patients
+        description: One row per patient, living or deceased.
+        columns:
+          - name: ID
+            data_tests: [unique, not_null]
+
+      - name: organizations
+        description: >
+          Provider organizations (hospitals, clinics, home health and so on)
+          with name, address and NPI.
+        columns:
+          - name: ID
+            data_tests: [unique, not_null]
+
+      - name: providers
+        description: >
+          Clinicians. This build generates exactly one provider per
+          organization, all with speciality GENERAL PRACTICE and a synthetic
+          NPI, so provider-level analysis is in effect facility-level.
+        columns:
+          - name: ID
+            data_tests: [unique, not_null]
+          - name: ORGANIZATION
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('synthea_2026_raw', 'organizations')
+                    field: ID
+
+      - name: payers
+        description: The ten payers, including a NO_INSURANCE row.
+        columns:
+          - name: ID
+            data_tests: [unique, not_null]
+
+      - name: payer_transitions
+        description: One row per patient per coverage span (about a year each), with member ID.
+        columns:
+          - name: PATIENT
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('synthea_2026_raw', 'patients')
+                    field: ID
+          - name: PAYER
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('synthea_2026_raw', 'payers')
+                    field: ID
+
+      # ---- Encounters and clinical events ------------------------------------
+      - name: encounters
+        description: >
+          One row per encounter, with organization, provider, payer, encounter
+          class, start and stop timestamps and cost columns.
+        columns:
+          - name: ID
+            data_tests: [unique, not_null]
+          - name: PATIENT
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('synthea_2026_raw', 'patients')
+                    field: ID
+          - name: ORGANIZATION
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('synthea_2026_raw', 'organizations')
+                    field: ID
+          - name: PROVIDER
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('synthea_2026_raw', 'providers')
+                    field: ID
+          - name: PAYER
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('synthea_2026_raw', 'payers')
+                    field: ID
+
+      - name: conditions
+      - name: medications
+      - name: procedures
+      - name: observations
+      - name: immunizations
+      - name: allergies
+      - name: careplans
+        columns:
+          - name: ID
+            data_tests: [not_null]
+      - name: devices
+      - name: supplies
+      - name: imaging_studies
+
+      # ---- Claims --------------------------------------------------------------
+      - name: claims
+        description: >
+          One row per claim. APPOINTMENTID is the encounter. Diagnosis codes are
+          SNOMED CT, not ICD-10-CM.
+        columns:
+          - name: ID
+            data_tests: [unique, not_null]
+          - name: PATIENTID
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('synthea_2026_raw', 'patients')
+                    field: ID
+          - name: PROVIDERID
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('synthea_2026_raw', 'providers')
+                    field: ID
+          - name: APPOINTMENTID
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('synthea_2026_raw', 'encounters')
+                    field: ID
+
+      - name: claims_transactions
+        description: >
+          Charge, payment and transfer lines per claim (33.0 M rows, the largest
+          table). PLACEOFSERVICE holds an organization ID, not a CMS place of
+          service code, and PROCEDURECODE is SNOMED CT or LOINC, not HCPCS.
+        columns:
+          - name: CLAIMID
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('synthea_2026_raw', 'claims')
+                    field: ID

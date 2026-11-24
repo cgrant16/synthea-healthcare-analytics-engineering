@@ -24,12 +24,32 @@ clean-targets: ["target", "dbt_packages"]
 
 flags:
   send_anonymous_usage_stats: false
+  # Both required by Tuva Core 1.0. The first makes ref('patient') inside the
+  # Tuva package resolve to this project's Input Layer models.
+  require_ref_searches_node_package_before_root: true
+  require_generic_test_arguments_property: true
+
+vars:
+  # ---- Tuva Core (see packages.yml) ----------------------------------------
+  # Feature switches must be native YAML booleans, never quoted strings.
+  clinical_enabled: true    # this project maps the clinical Input Layer
+  # claims_enabled is left unset (= false) until the claims mapping exists.
+  # Tuva builds into its own schemas. The prefix keeps them apart from this
+  # project's STAGING / INTERMEDIATE / MARTS: TUVA_CORE, TUVA_TERMINOLOGY, ...
+  # SYNTHEA_DBT_ROLE cannot create schemas, so each one is pre-created in
+  # snowflake/07_tuva_schemas.sql.
+  tuva_schema_prefix: tuva
 
 models:
   synthea_analytics:
     +persist_docs:          # push model/column descriptions into Snowflake comments
       relation: true
       columns: true
+
+    tuva_input_layer:       # one model per Tuva Input Layer table, named as Tuva expects
+      +schema: TUVA_INPUT_LAYER
+      +materialized: table
+      +tags: ["input_layer"]
 
     staging:                # stg_*: 1:1 with a RAW table; rename, cast, light cleanup
       +schema: STAGING
@@ -42,6 +62,11 @@ models:
     marts:                  # dim_* / fct_*: star schema for analysts
       +schema: MARTS
       +materialized: table
+
+seeds:
+  the_tuva_project:
+    synthetic_data:
+      +enabled: false       # Tuva's own demo dataset; this project maps real source tables instead
 
 data_tests:
   synthea_analytics:
